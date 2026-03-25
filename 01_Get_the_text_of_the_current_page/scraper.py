@@ -104,6 +104,15 @@ class WebScraper:
         self.max_retries = 3  # 最大重试次数
         self.use_selenium = False  # 是否使用Selenium（用于JavaScript渲染）
         
+        # 创建Session对象，用于保持Cookie和登录状态
+        # requests.Session()会自动管理Cookie，类似Java的CookieManager
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+        
+        # 存储已连接的浏览器实例（如果使用连接已打开浏览器功能）
+        self.connected_driver = None
+        self.browser_connected = False
+        
     def validate_url(self, url: str) -> bool:
         """
         验证URL格式的方法
@@ -160,12 +169,12 @@ class WebScraper:
                 # 等价于: "正在请求网页 (尝试 " + str(attempt+1) + "/" + str(max_retries) + "): " + url
                 logger.info(f"正在请求网页 (尝试 {attempt + 1}/{self.max_retries}): {url}")
                 
-                # requests.get()：发送HTTP GET请求
+                # 使用Session对象发送HTTP GET请求，自动携带Cookie
+                # Session会自动管理Cookie，保持登录状态
                 # 类似Java: HttpClient.get(url, headers, timeout)
                 # Python支持关键字参数（命名参数），提高了代码可读性
-                response = requests.get(
+                response = self.session.get(
                     url,
-                    headers=self.headers,
                     timeout=self.timeout,
                     allow_redirects=True,
                     verify=True  # SSL验证
@@ -276,12 +285,82 @@ class WebScraper:
         
         return None
     
-    def fetch_html_with_selenium(self, url: str) -> str:
+    def connect_to_existing_browser(self, debugger_address: str = "127.0.0.1:9222") -> bool:
+        """
+        连接到已打开的Chrome浏览器实例，获取Cookie和登录状态
+        
+        Args:
+            debugger_address: Chrome调试端口地址，格式为 "IP:端口"，默认 "127.0.0.1:9222"
+            
+        Returns:
+            bool: 连接是否成功
+        """
+        if not SELENIUM_AVAILABLE:
+            logger.error("Selenium未安装，无法连接浏览器。请运行: pip install selenium webdriver-manager")
+            return False
+        
+        try:
+            logger.info(f"尝试连接到已打开的Chrome浏览器: {debugger_address}")
+            
+            # 配置Chrome选项，连接到已打开的浏览器
+            chrome_options = Options()
+            chrome_options.add_experimental_option("debuggerAddress", debugger_address)
+            chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
+            
+            # 连接到已打开的浏览器实例
+            # 注意：不需要创建新的Service，因为浏览器已经运行
+            self.connected_driver = webdriver.Chrome(options=chrome_options)
+            
+            # 获取当前标签页的URL
+            current_url = self.connected_driver.current_url
+            logger.info(f"成功连接到浏览器，当前页面: {current_url}")
+            
+            # 获取当前页面的所有Cookie
+            cookies = self.connected_driver.get_cookies()
+            logger.info(f"获取到 {len(cookies)} 个Cookie")
+            
+            # 将Cookie设置到requests Session中
+            for cookie in cookies:
+                # 构建Cookie对象并添加到Session
+                # 注意：需要处理domain、path等属性
+                cookie_dict = {
+                    'name': cookie['name'],
+                    'value': cookie['value'],
+                }
+                # 如果有domain，添加到Cookie字典
+                if 'domain' in cookie:
+                    cookie_dict['domain'] = cookie['domain']
+                if 'path' in cookie:
+                    cookie_dict['path'] = cookie['path']
+                
+                # 使用requests的cookies.set方法设置Cookie
+                # 需要构造完整的domain，去掉开头的点
+                domain = cookie.get('domain', '')
+                if domain.startswith('.'):
+                    domain = domain[1:]
+                
+                try:
+                    self.session.cookies.set(cookie['name'], cookie['value'], domain=domain)
+                except Exception as e:
+                    logger.warning(f"设置Cookie失败 {cookie['name']}: {e}")
+            
+            self.browser_connected = True
+            logger.info("成功将浏览器Cookie应用到Session")
+            return True
+            
+        except Exception as e:
+            logger.error(f"连接浏览器失败: {e}")
+            self.browser_connected = False
+            self.connected_driver = None
+            return False
+    
+    def fetch_html_with_selenium(self, url: str, use_existing_browser: bool = False) -> str:
         """
         使用Selenium获取网页HTML内容（支持JavaScript渲染）
         
         Args:
             url: 网页URL
+            use_existing_browser: 是否使用已连接的浏览器实例
             
         Returns:
             str: HTML文本内容，失败返回None
@@ -290,24 +369,35 @@ class WebScraper:
             raise Exception("Selenium未安装，无法处理JavaScript渲染的网页。请运行: pip install selenium webdriver-manager")
         
         driver = None
+        should_close_driver = True
+        
         try:
             logger.info(f"使用Selenium获取网页: {url}")
             
-            # 配置Chrome选项
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')  # 无头模式
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--window-size=1920,1080')
-            chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
-            
-            # 创建WebDriver
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+            # 如果已连接浏览器且要求使用，则使用已连接的浏览器实例
+            if use_existing_browser and self.browser_connected and self.connected_driver:
+                driver = self.connected_driver
+                should_close_driver = False
+                logger.info("使用已连接的浏览器实例")
+            else:
+                # 配置Chrome选项
+                chrome_options = Options()
+                chrome_options.add_argument('--headless')  # 无头模式
+                chrome_options.add_argument('--no-sandbox')
+                chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--window-size=1920,1080')
+                chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
+                
+                # 创建WebDriver
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
             
             # 设置超时
             driver.set_page_load_timeout(self.timeout)
+            
+            # 记录初始URL（用于检测跳转）
+            initial_url = driver.current_url if use_existing_browser and self.browser_connected else None
             
             # 访问网页
             driver.get(url)
@@ -318,23 +408,40 @@ class WebScraper:
                 WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-                # 额外等待JavaScript执行
-                import time
+                
+                # 检测JavaScript跳转：检查URL是否变化
+                current_url = driver.current_url
+                if initial_url and current_url != url and current_url != initial_url:
+                    logger.info(f"检测到页面跳转: {url} -> {current_url}")
+                    # 等待跳转后的页面加载完成
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                
+                # 额外等待JavaScript执行和动态内容加载
                 time.sleep(2)  # 等待JavaScript渲染
+                
+                # 再次检查URL是否还在变化（处理多级跳转）
+                final_url = driver.current_url
+                if final_url != current_url:
+                    logger.info(f"检测到多级跳转，最终URL: {final_url}")
+                    time.sleep(1)  # 额外等待
+                    
             except Exception as e:
                 logger.warning(f"等待页面加载超时: {e}")
             
             # 获取页面源码
             html_text = driver.page_source
             
-            logger.info(f"成功获取网页内容（Selenium），文本长度: {len(html_text)} 字符")
+            logger.info(f"成功获取网页内容（Selenium），文本长度: {len(html_text)} 字符，最终URL: {driver.current_url}")
             return html_text
             
         except Exception as e:
             logger.error(f"Selenium获取网页失败: {e}")
             raise Exception(f"Selenium获取网页失败: {str(e)}")
         finally:
-            if driver:
+            # 只有在不是使用已连接浏览器的情况下才关闭driver
+            if should_close_driver and driver:
                 driver.quit()
     
     def extract_text(self, html_text: str) -> str:
@@ -505,13 +612,14 @@ class WebScraper:
             logger.error(f"文本提取失败: {e}")
             raise Exception(f"文本提取失败: {str(e)}")
     
-    def scrape_webpage_text(self, url: str, use_selenium: bool = None) -> str:
+    def scrape_webpage_text(self, url: str, use_selenium: bool = None, use_existing_browser: bool = False) -> str:
         """
         抓取网页并提取文本（主要方法）
         
         Args:
             url: 网页URL
             use_selenium: 是否使用Selenium（None时自动检测）
+            use_existing_browser: 是否使用已连接的浏览器实例
             
         Returns:
             str: 提取的文本内容
@@ -529,7 +637,7 @@ class WebScraper:
                 logger.warning("Selenium不可用，回退到普通方法")
                 html_text = self.fetch_html(url)
             else:
-                html_text = self.fetch_html_with_selenium(url)
+                html_text = self.fetch_html_with_selenium(url, use_existing_browser=use_existing_browser)
         else:
             html_text = self.fetch_html(url)
             if html_text:

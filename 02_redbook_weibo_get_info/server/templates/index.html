@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>RedNote Insight Collector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        .markdown-body h1 { font-size: 1.5em; font-weight: bold; margin-bottom: 0.5em; }
+        .markdown-body h2 { font-size: 1.25em; font-weight: bold; margin-top: 1em; margin-bottom: 0.5em; }
+        .markdown-body ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 1em; }
+        .markdown-body p { margin-bottom: 1em; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 h-screen flex flex-col overflow-hidden">
+
+<div id="app" v-cloak class="flex h-full">
+    
+    <!-- Sidebar: 列表 -->
+    <div class="w-1/3 bg-white border-r border-gray-200 flex flex-col h-full z-20 shadow-xl">
+        
+        <!-- Top Nav -->
+        <div class="flex border-b border-gray-200 bg-gray-50">
+            <button @click="switchView('posts')" 
+                :class="['flex-1 py-3 text-sm font-bold transition-colors border-b-2', currentView === 'posts' ? 'bg-white text-red-600 border-red-500' : 'text-gray-500 hover:text-gray-700 border-transparent']">
+                📚 笔记列表
+            </button>
+            <button @click="switchView('reports')" 
+                :class="['flex-1 py-3 text-sm font-bold transition-colors border-b-2', currentView === 'reports' ? 'bg-white text-purple-600 border-purple-500' : 'text-gray-500 hover:text-gray-700 border-transparent']">
+                🧠 学习报告
+            </button>
+        </div>
+
+        <!-- POSTS VIEW HEADER -->
+        <div v-if="currentView === 'posts'" class="p-4 border-b border-gray-200 bg-white space-y-3 shadow-sm z-10">
+            <div class="flex justify-between items-center">
+                <div class="flex gap-2 items-center">
+                    <button @click="fetchPosts" class="p-2 text-gray-500 hover:bg-gray-100 rounded transition-colors" title="刷新列表">🔄</button>
+                    
+                    <!-- Batch Actions -->
+                    <div v-if="selectedPostIds.length > 0" class="flex gap-2 animate-fade-in">
+                        <button @click="deleteSelected" class="px-3 py-1.5 text-xs font-medium bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors flex items-center gap-1">
+                            🗑️ <span class="hidden sm:inline">删除</span> ({{ selectedPostIds.length }})
+                        </button>
+                        <button @click="aggregateAnalysis" class="px-3 py-1.5 text-xs font-medium bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition-colors flex items-center gap-1" title="生成整合报告">
+                            🧩 <span class="hidden sm:inline">聚合分析</span>
+                        </button>
+                        <button @click="downloadImages" class="px-3 py-1.5 text-xs font-medium bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors flex items-center gap-1" title="下载图片到本地">
+                            📥 <span class="hidden sm:inline">下载图片</span>
+                        </button>
+                    </div>
+                </div>
+
+                <button v-if="selectedPostIds.length === 0" @click="analyzeBatch" :disabled="isAnalyzing" 
+                    class="px-4 py-1.5 text-sm font-bold bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white rounded shadow-md disabled:opacity-50 transition-all transform active:scale-95">
+                    {{ isAnalyzing ? '分析中...' : '🚀 批量分析' }}
+                </button>
+            </div>
+
+            <div class="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+                <div class="flex items-center justify-between gap-2">
+                    <div class="text-xs font-medium text-gray-600">
+                        已选 <span class="font-bold text-red-600">{{ selectedPostIds.length }}</span> / 可见 {{ visiblePostIds.length }}
+                    </div>
+                    <div class="text-[10px] text-gray-400" v-if="isAllVisibleSelected">当前筛选结果已全选</div>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                    <button @click="toggleSelectAllVisible"
+                        :class="['px-2.5 py-1 text-xs rounded-full border transition-colors', isAllVisibleSelected ? 'bg-red-100 text-red-700 border-red-200 hover:bg-red-200' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100']">
+                        {{ isAllVisibleSelected ? '取消全选可见' : '全选可见' }}
+                    </button>
+                    <button @click="invertVisibleSelection"
+                        class="px-2.5 py-1 text-xs rounded-full border bg-white text-gray-700 border-gray-200 hover:bg-gray-100 transition-colors">
+                        反选可见
+                    </button>
+                    <button @click="quickSelectTop(10)"
+                        class="px-2.5 py-1 text-xs rounded-full border bg-white text-gray-700 border-gray-200 hover:bg-gray-100 transition-colors">
+                        快选前10条
+                    </button>
+                    <button @click="clearSelection" :disabled="selectedPostIds.length === 0"
+                        class="px-2.5 py-1 text-xs rounded-full border bg-white text-gray-700 border-gray-200 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        清空勾选
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tab Switcher -->
+            <div class="flex border-b border-gray-100 pt-2">
+                <button @click="currentTab = 'all'" :class="['flex-1 pb-2 text-xs font-medium border-b-2 transition-colors', currentTab === 'all' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-700']">全部</button>
+                <button @click="currentTab = 'pending'" :class="['flex-1 pb-2 text-xs font-medium border-b-2 transition-colors', currentTab === 'pending' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-700']">未分析</button>
+                <button @click="currentTab = 'analyzed'" :class="['flex-1 pb-2 text-xs font-medium border-b-2 transition-colors', currentTab === 'analyzed' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-700']">已分析</button>
+            </div>
+        </div>
+
+        <!-- REPORTS VIEW HEADER -->
+        <div v-if="currentView === 'reports'" class="p-4 border-b border-gray-200 bg-white space-y-2 shadow-sm z-10">
+            <div class="flex justify-between items-center">
+                <h2 class="font-bold text-gray-700 text-sm">已生成的报告</h2>
+                <button @click="fetchReports" class="p-2 text-gray-500 hover:bg-gray-100 rounded transition-colors">🔄</button>
+            </div>
+            <div v-if="aggregationJob && (aggregationJob.status === 'queued' || aggregationJob.status === 'processing')" class="text-xs bg-purple-50 text-purple-700 px-3 py-2 rounded-lg border border-purple-100">
+                <span class="font-bold mr-2">聚合进度 {{ aggregationJob.progress || 0 }}%</span>
+                <span>{{ aggregationJob.message || '正在生成学习报告…' }}</span>
+            </div>
+        </div>
+
+        <!-- LIST CONTENT -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+            
+            <!-- POSTS LIST -->
+            <template v-if="currentView === 'posts'">
+                <div v-for="post in filteredPosts" :key="post.id" 
+                     @click="selectPost(post)"
+                     :class="['p-4 rounded-xl border cursor-pointer transition-all card-hover relative group', 
+                              selectedPostIds.includes(post.id) ? 'ring-2 ring-red-200 border-red-300 bg-red-50/30' : '',
+                              selectedPost?.id === post.id ? 'border-red-500 bg-white ring-1 ring-red-100' : 'border-gray-200 bg-white hover:border-red-200']">
+                    
+                    <!-- Checkbox -->
+                    <div class="absolute top-4 right-4 z-10" @click.stop>
+                        <input type="checkbox" :value="post.id" v-model="selectedPostIds" 
+                               class="w-5 h-5 text-red-600 rounded border-gray-300 focus:ring-red-500 cursor-pointer shadow-sm">
+                    </div>
+
+                    <div class="flex justify-between items-start mb-2 pr-8">
+                        <span class="text-xs font-mono text-gray-400 truncate max-w-[60%]">@{{ post.author_name }}</span>
+                        <!-- Status Badge -->
+                        <span v-if="post.status === 'completed' || post.insight" class="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-bold">已分析</span>
+                        <span v-else-if="post.status === 'processing'" class="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full animate-pulse">分析中</span>
+                        <span v-else-if="post.status === 'failed'" class="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full cursor-help" :title="post.error_msg">失败</span>
+                    </div>
+                    
+                    <h3 class="font-bold text-gray-800 text-sm line-clamp-2 mb-2 leading-snug">{{ post.title }}</h3>
+                    
+                    <div v-if="post.insight" class="text-xs text-gray-500 line-clamp-2">
+                        💡 {{ post.insight.summary.one_liner }}
+                    </div>
+                </div>
+                
+                <div v-if="filteredPosts.length === 0" class="text-center text-gray-400 py-10 flex flex-col items-center">
+                    <span class="text-2xl mb-2">📭</span>
+                    <span>暂无数据</span>
+                </div>
+            </template>
+
+            <!-- REPORTS LIST -->
+            <template v-if="currentView === 'reports'">
+                 <div v-for="rep in reports" :key="rep.id" @click="selectReport(rep)"
+                      :class="['p-5 rounded-xl border cursor-pointer transition-all card-hover relative', 
+                               selectedReport?.id === rep.id ? 'border-purple-500 bg-white ring-1 ring-purple-100' : 'bg-white border-gray-200 hover:border-purple-200']">
+                      
+                      <button @click.stop="deleteReport(rep)" class="absolute top-4 right-4 text-gray-300 hover:text-red-500 transition-colors p-1" title="删除报告">
+                          🗑️
+                      </button>
+
+                      <div class="flex items-center gap-2 mb-3">
+                          <span class="text-[10px] font-bold text-white bg-purple-500 px-2 py-0.5 rounded-full">REPORT</span>
+                          <span class="text-[10px] text-gray-400">{{ new Date(rep.created_at).toLocaleString() }}</span>
+                      </div>
+                      <h3 class="font-bold text-gray-800 text-sm mb-2 leading-relaxed">{{ rep.title }}</h3>
+                      <div class="text-xs text-gray-500 bg-gray-50 p-2 rounded inline-block">
+                          包含 {{ JSON.parse(rep.source_post_ids).length }} 篇笔记
+                      </div>
+                 </div>
+                 
+                 <div v-if="reports.length === 0" class="text-center text-gray-400 py-10 flex flex-col items-center">
+                    <span class="text-2xl mb-2">📝</span>
+                    <span>暂无报告，请在笔记列表勾选并点击“聚合分析”</span>
+                </div>
+            </template>
+
+        </div>
+    </div>
+
+    <!-- Main: 详情 -->
+    <div class="w-2/3 h-full overflow-y-auto bg-gray-50 p-8">
+        
+        <!-- POST DETAIL VIEW -->
+        <template v-if="currentView === 'posts'">
+            <div v-if="selectedPost" class="max-w-3xl mx-auto space-y-6 pb-20">
+                
+                <!-- Raw Content Card -->
+                <div class="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 relative group">
+                    <div class="absolute top-6 right-6 flex gap-2 transition-opacity">
+                        <button @click="analyzeSingle(selectedPost)"
+                                :disabled="selectedPost.status === 'processing'"
+                                :class="[
+                                    'px-3 py-1.5 text-xs text-white rounded transition-colors',
+                                    selectedPost.status === 'processing'
+                                      ? 'bg-blue-300 cursor-not-allowed'
+                                      : 'bg-blue-500 hover:bg-blue-600'
+                                ]">
+                            {{ selectedPost.status === 'processing' ? '⏳ 分析中...' : (selectedPost.insight ? '🔁 重新分析' : '✨ AI 分析') }}
+                        </button>
+                        <button @click="deleteSingle(selectedPost)" class="px-3 py-1.5 text-xs bg-gray-100 text-red-600 rounded hover:bg-red-50 transition-colors">
+                            🗑️ 删除
+                        </button>
+                    </div>
+                    <a :href="selectedPost.raw_data.url" target="_blank" class="text-2xl font-bold hover:text-red-500 transition-colors mb-4 block">
+                        {{ selectedPost.title }} ↗
+                    </a>
+                    <div class="prose prose-sm max-w-none text-gray-600 max-h-60 overflow-y-auto custom-scrollbar">
+                        {{ selectedPost.content }}
+                    </div>
+                    <!-- Images Preview (Optional) -->
+                    <div v-if="selectedPost.raw_data.media?.images?.length" class="mt-4 flex gap-2 overflow-x-auto pb-2">
+                         <img v-for="img in selectedPost.raw_data.media.images.slice(0, 4)" :src="img" class="h-20 w-20 object-cover rounded-lg border border-gray-200">
+                    </div>
+                </div>
+
+                <!-- Insight Card -->
+                <div v-if="selectedPost.insight" class="space-y-6 animate-fade-in-up">
+                    <div v-if="selectedPost.insight.learning_insight" class="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 space-y-5">
+                        <div class="flex items-center justify-between">
+                            <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2"><span>🧭</span> 学习助理提炼</h2>
+                            <span class="text-xs px-2 py-1 rounded-full bg-blue-50 text-blue-600 font-medium">Learning Assistant</span>
+                        </div>
+
+                        <div>
+                            <h3 class="text-xs font-bold text-blue-500 uppercase tracking-wider mb-2">核心收获</h3>
+                            <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                                <li v-for="(item, idx) in selectedPost.insight.learning_insight.core_takeaways" :key="'tk-' + idx">{{ item }}</li>
+                            </ul>
+                        </div>
+
+                        <div>
+                            <h3 class="text-xs font-bold text-emerald-500 uppercase tracking-wider mb-2">方法步骤</h3>
+                            <div class="space-y-2">
+                                <div v-for="(step, idx) in selectedPost.insight.learning_insight.method_playbook" :key="'mp-' + idx" class="bg-emerald-50 rounded-lg px-3 py-2 text-sm text-gray-700">
+                                    {{ idx + 1 }}. {{ step }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 class="text-xs font-bold text-violet-500 uppercase tracking-wider mb-2">练习任务</h3>
+                            <div class="space-y-2">
+                                <div v-for="(task, idx) in selectedPost.insight.learning_insight.practice_tasks" :key="'pt-' + idx" class="border border-violet-100 rounded-lg p-3">
+                                    <p class="text-sm font-semibold text-gray-800">{{ task.task }}</p>
+                                    <p class="text-xs text-gray-500 mt-1">难度：{{ task.difficulty }} ｜ 完成标准：{{ task.expected_outcome }}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div class="bg-amber-50 rounded-lg p-3">
+                                <h3 class="text-xs font-bold text-amber-600 uppercase tracking-wider mb-2">误区提醒</h3>
+                                <ul class="list-disc list-inside text-xs text-gray-700 space-y-1">
+                                    <li v-for="(item, idx) in selectedPost.insight.learning_insight.pitfalls" :key="'pf-' + idx">{{ item }}</li>
+                                </ul>
+                            </div>
+                            <div class="bg-sky-50 rounded-lg p-3">
+                                <h3 class="text-xs font-bold text-sky-600 uppercase tracking-wider mb-2">24小时行动</h3>
+                                <ul class="list-disc list-inside text-xs text-gray-700 space-y-1">
+                                    <li v-for="(item, idx) in selectedPost.insight.learning_insight.next_actions_24h" :key="'na-' + idx">{{ item }}</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- ================= GENERAL INSIGHT ================= -->
+                    <template v-if="selectedPost.insight.type !== 'ai'">
+                        <!-- Summary -->
+                        <div v-if="selectedPost.insight.summary" class="bg-gradient-to-br from-red-50 to-orange-50 p-6 rounded-2xl border border-red-100 shadow-sm">
+                            <h2 class="text-sm font-bold text-red-400 uppercase tracking-widest mb-3">Core Summary</h2>
+                            <p class="text-xl font-bold text-gray-800 mb-4 leading-relaxed">{{ selectedPost.insight.summary.one_liner }}</p>
+                            <div class="flex flex-wrap gap-2">
+                                <span v-for="kw in selectedPost.insight.summary.keywords" 
+                                      class="px-3 py-1 bg-white text-red-600 text-xs font-bold rounded-full border border-red-100 shadow-sm">
+                                    #{{ kw }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Assets -->
+                        <div v-if="selectedPost.insight.assets?.image_prompts?.length" class="bg-slate-800 text-slate-200 p-6 rounded-2xl shadow-lg">
+                            <h2 class="text-sm font-bold text-slate-400 uppercase mb-4">AI Image Prompt</h2>
+                            <div class="bg-slate-900/50 p-4 rounded-xl font-mono text-xs text-green-400 break-all select-all">
+                                {{ selectedPost.insight.assets.image_prompts[0] }}
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- ================= AI INSIGHT ================= -->
+                    <template v-else-if="selectedPost.insight.ai_insight">
+                        <!-- Summary (Shared style but blue theme) -->
+                        <div class="bg-gradient-to-br from-indigo-50 to-blue-50 p-6 rounded-2xl border border-indigo-100 shadow-sm">
+                            <h2 class="text-sm font-bold text-indigo-400 uppercase tracking-widest mb-3">AI Insight Summary</h2>
+                            <p class="text-xl font-bold text-gray-800 mb-4 leading-relaxed">{{ selectedPost.insight.summary.one_liner }}</p>
+                            <div class="flex flex-wrap gap-2">
+                                <span v-for="kw in selectedPost.insight.summary.keywords" 
+                                    class="px-3 py-1 bg-white text-indigo-600 text-xs font-bold rounded-full border border-indigo-100 shadow-sm">
+                                    #{{ kw }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Glossary -->
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                            <h3 class="font-bold text-gray-800 text-lg mb-4 flex items-center gap-2"><span>📖</span> 前沿词汇解码器</h3>
+                            <div class="space-y-4">
+                                <div v-for="item in selectedPost.insight.ai_insight.glossary" class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                    <div class="flex justify-between items-start mb-2">
+                                        <span class="font-bold text-indigo-600 text-base">{{ item.term }}</span>
+                                        <span class="text-xs bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-medium">{{ item.analogy }}</span>
+                                    </div>
+                                    <p class="text-sm text-gray-800 font-medium mb-1">{{ item.definition }}</p>
+                                    <p class="text-xs text-gray-500 mt-2 flex items-start gap-1">
+                                        <span>💡</span>
+                                        <span>{{ item.importance }}</span>
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Architecture -->
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                            <h3 class="font-bold text-gray-800 text-lg mb-4 flex items-center gap-2"><span>🏗️</span> 技术架构白话版</h3>
+                            <div class="bg-blue-50 p-4 rounded-xl mb-4 border-l-4 border-blue-400 text-blue-900 text-sm">
+                                <span class="font-bold">🤔 生活类比：</span> {{ selectedPost.insight.ai_insight.architecture.analogy }}
+                            </div>
+                            <div class="space-y-3">
+                                <div class="text-xs font-mono bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto whitespace-pre leading-relaxed border border-gray-800 shadow-inner">
+{{ selectedPost.insight.ai_insight.architecture.flow_diagram }}
+                                </div>
+                                <p class="text-gray-600 text-sm italic border-l-2 border-gray-200 pl-3">{{ selectedPost.insight.ai_insight.architecture.components }}</p>
+                            </div>
+                        </div>
+
+                        <!-- Competitor Analysis -->
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                            <h3 class="font-bold text-gray-800 text-lg mb-4 flex items-center gap-2"><span>⚔️</span> 核心能力横向 PK</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                    <div class="bg-green-50 p-4 rounded-xl border border-green-100">
+                                        <span class="text-xs font-bold text-green-600 uppercase tracking-wider">Unique Selling Point</span>
+                                        <p class="text-green-800 font-bold mt-1 text-sm">{{ selectedPost.insight.ai_insight.competitor_analysis.unique_selling_point }}</p>
+                                    </div>
+                                    <div class="bg-red-50 p-4 rounded-xl border border-red-100">
+                                        <span class="text-xs font-bold text-red-600 uppercase tracking-wider">Weakness</span>
+                                        <p class="text-red-800 font-bold mt-1 text-sm">{{ selectedPost.insight.ai_insight.competitor_analysis.weakness }}</p>
+                                    </div>
+                            </div>
+                            <div class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 p-4 rounded-lg font-mono text-xs">
+{{ selectedPost.insight.ai_insight.competitor_analysis.comparison_table }}
+                            </div>
+                        </div>
+
+                        <!-- Radar Chart -->
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                            <h3 class="font-bold text-gray-800 text-lg mb-4 flex items-center gap-2"><span>📡</span> 能力雷达</h3>
+                            <div class="space-y-4">
+                                <div v-for="dim in selectedPost.insight.ai_insight.radar_chart" class="flex items-center gap-4">
+                                    <span class="w-24 text-sm font-bold text-gray-600 truncate text-right">{{ dim.dimension }}</span>
+                                    <div class="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                                        <div class="h-full bg-indigo-500 rounded-full transition-all duration-1000 ease-out" :style="{ width: (dim.score / 5 * 100) + '%' }"></div>
+                                    </div>
+                                    <span class="text-sm font-bold text-indigo-600 w-8">{{ dim.score }}/5</span>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                </div>
+
+                <!-- Error State -->
+                <div v-else-if="selectedPost.status === 'failed'" class="flex flex-col items-center justify-center h-64 bg-red-50 rounded-2xl border-2 border-dashed border-red-200 p-8 text-center">
+                    <div class="text-4xl mb-4">❌</div>
+                    <h3 class="text-red-800 font-bold mb-2">分析失败</h3>
+                    <p class="text-red-600 text-sm font-mono break-all max-w-full overflow-y-auto max-h-32">{{ selectedPost.error_msg || '未知错误' }}</p>
+                    <button @click="analyzeSingle(selectedPost)" class="mt-4 px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-bold transition-colors">
+                        重试
+                    </button>
+                </div>
+
+                <!-- Empty State -->
+                <div v-else class="flex flex-col items-center justify-center h-64 bg-white rounded-2xl border-2 border-dashed border-gray-200">
+                    <div class="text-4xl mb-4 opacity-50">🔮</div>
+                    <p class="text-gray-500 font-medium">Waiting for analysis...</p>
+                </div>
+            </div>
+            <div v-else class="flex h-full items-center justify-center text-gray-300 flex-col gap-4">
+                <span class="text-6xl">👈</span>
+                <p>请选择左侧笔记查看详情</p>
+            </div>
+        </template>
+
+        <!-- REPORT DETAIL VIEW -->
+        <template v-if="currentView === 'reports'">
+            <div v-if="selectedReport" class="max-w-4xl mx-auto pb-20">
+                <div class="bg-white p-10 rounded-3xl shadow-lg border border-gray-100">
+                    <div class="mb-8 border-b border-gray-100 pb-8">
+                        <div class="flex items-center gap-3 mb-4">
+                             <span class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold tracking-wider">LEARNING REPORT</span>
+                             <span class="text-gray-400 text-sm">{{ new Date(selectedReport.created_at).toLocaleString() }}</span>
+                        </div>
+                        <h1 class="text-3xl font-bold text-gray-900 leading-tight">{{ selectedReport.title }}</h1>
+                    </div>
+                    
+                    <div class="space-y-10">
+                        <section>
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg text-lg">🧭</span>
+                                一句话总结
+                            </h2>
+                            <div class="bg-blue-50/50 p-6 rounded-2xl text-gray-700 leading-relaxed text-lg">
+                                {{ selectedReport.content.summary.one_liner }}
+                            </div>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <span v-for="(k, i) in selectedReport.content.summary.keywords" :key="'kw-' + i" class="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700">
+                                    {{ k }}
+                                </span>
+                            </div>
+                        </section>
+
+                        <section>
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-lg text-lg">🧠</span>
+                                核心收获
+                            </h2>
+                            <div class="space-y-2">
+                                <div v-for="(item, i) in selectedReport.content.learning_insight.core_takeaways" :key="'ct-' + i" class="bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-700">
+                                    {{ i + 1 }}. {{ item }}
+                                </div>
+                            </div>
+                        </section>
+
+                        <section>
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-yellow-100 text-yellow-600 rounded-lg text-lg">🚀</span>
+                                方法步骤
+                            </h2>
+                            <div class="space-y-4">
+                                <div v-for="(step, i) in selectedReport.content.learning_insight.method_playbook" :key="'mp-' + i" class="flex gap-4 items-start bg-gray-50 p-5 rounded-xl">
+                                    <span class="flex-shrink-0 w-8 h-8 bg-gray-800 text-white rounded-full flex items-center justify-center font-bold text-sm">{{ i + 1 }}</span>
+                                    <p class="text-gray-700 mt-1">{{ step }}</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section v-if="selectedReport.content.learning_insight.practice_tasks.length">
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-violet-100 text-violet-600 rounded-lg text-lg">🛠️</span>
+                                练习任务
+                            </h2>
+                            <div class="space-y-2">
+                                <div v-for="(task, i) in selectedReport.content.learning_insight.practice_tasks" :key="'pt-' + i" class="border border-violet-100 rounded-xl p-4 bg-violet-50/40">
+                                    <p class="text-sm font-semibold text-gray-800">{{ task.task }}</p>
+                                    <p class="text-xs text-gray-500 mt-1">难度：{{ task.difficulty }} ｜ 完成标准：{{ task.expected_outcome }}</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section v-if="selectedReport.content.learning_insight.evidence_snippets.length">
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-amber-100 text-amber-600 rounded-lg text-lg">📌</span>
+                                原文证据
+                            </h2>
+                            <div class="space-y-2">
+                                <div v-for="(item, i) in selectedReport.content.learning_insight.evidence_snippets" :key="'ev-' + i" class="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-sm text-gray-700">
+                                    {{ item }}
+                                </div>
+                            </div>
+                        </section>
+
+                        <section v-if="selectedReport.content.cross_post_synthesis.consensus.length || selectedReport.content.cross_post_synthesis.conflicts.length || selectedReport.content.cross_post_synthesis.knowledge_map.length">
+                            <h2 class="flex items-center gap-3 text-xl font-bold text-gray-800 mb-4">
+                                <span class="w-8 h-8 flex items-center justify-center bg-indigo-100 text-indigo-600 rounded-lg text-lg">🧩</span>
+                                跨帖归纳
+                            </h2>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="bg-indigo-50 p-5 rounded-xl">
+                                    <h3 class="text-sm font-bold text-indigo-600 mb-2">共识</h3>
+                                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                                        <li v-for="(item, i) in selectedReport.content.cross_post_synthesis.consensus" :key="'cs-' + i">{{ item }}</li>
+                                    </ul>
+                                </div>
+                                <div class="bg-rose-50 p-5 rounded-xl">
+                                    <h3 class="text-sm font-bold text-rose-600 mb-2">分歧与适用条件</h3>
+                                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                                        <li v-for="(item, i) in selectedReport.content.cross_post_synthesis.conflicts" :key="'cf-' + i">{{ item }}</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div v-if="selectedReport.content.cross_post_synthesis.knowledge_map.length" class="mt-4 bg-cyan-50 p-5 rounded-xl">
+                                <h3 class="text-sm font-bold text-cyan-600 mb-2">知识关系图</h3>
+                                <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                                    <li v-for="(item, i) in selectedReport.content.cross_post_synthesis.knowledge_map" :key="'km-' + i">{{ item }}</li>
+                                </ul>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+            <div v-else class="flex h-full items-center justify-center text-gray-300 flex-col gap-4">
+                <span class="text-6xl">👈</span>
+                <p>请选择左侧报告查看详情</p>
+            </div>
+        </template>
+    </div>
+
+</div>
+
+<script>
+    const { createApp, ref, onMounted, computed } = Vue;
+
+    createApp({
+        setup() {
+            const currentView = ref('posts'); // posts, reports
+            const currentTab = ref('all');
+            
+            // Data
+            const posts = ref([]);
+            const reports = ref([]);
+            const aggregationJob = ref(null);
+            
+            // Selection
+            const selectedPost = ref(null);
+            const selectedPostIds = ref([]);
+            const selectedReport = ref(null);
+            
+            // Status
+            const isAnalyzing = ref(false);
+            const isAggregating = computed(() => {
+                return aggregationJob.value && (aggregationJob.value.status === 'queued' || aggregationJob.value.status === 'processing');
+            });
+
+            // Computed
+            const filteredPosts = computed(() => {
+                if (currentTab.value === 'all') return posts.value;
+                if (currentTab.value === 'analyzed') {
+                    return posts.value.filter(p => p.status === 'completed' || p.insight);
+                }
+                if (currentTab.value === 'pending') {
+                    return posts.value.filter(p => !p.insight && p.status !== 'completed');
+                }
+                return posts.value;
+            });
+            const visiblePostIds = computed(() => filteredPosts.value.map(p => p.id));
+            const isAllVisibleSelected = computed(() => {
+                if (visiblePostIds.value.length === 0) return false;
+                return visiblePostIds.value.every(id => selectedPostIds.value.includes(id));
+            });
+
+            // API Methods
+            const fetchPosts = async () => {
+                try {
+                    const res = await fetch('/api/posts?limit=50');
+                    const data = await res.json();
+                    posts.value = data.map(p => ({
+                        ...p,
+                        raw_data: JSON.parse(p.raw_json),
+                    }));
+                    
+                    // Sync selection
+                    if (selectedPost.value) {
+                        const updated = posts.value.find(p => p.id === selectedPost.value.id);
+                        if (updated) selectedPost.value = updated;
+                    }
+                    if (!selectedPost.value && posts.value.length > 0) {
+                        selectedPost.value = posts.value[0];
+                    }
+                } catch (e) { console.error(e); }
+            };
+
+            const fetchReports = async () => {
+                try {
+                    const res = await fetch('/api/reports');
+                    const data = await res.json();
+                    reports.value = data.map(r => {
+                        try {
+                            return {
+                                ...r,
+                                content: normalizeReportContent(JSON.parse(r.content_json))
+                            };
+                        } catch (e) {
+                            console.error('Failed to parse report content', r.id, e);
+                            return null;
+                        }
+                    }).filter(r => r !== null);
+                    if (selectedReport.value) {
+                        const updated = reports.value.find(r => r.id === selectedReport.value.id);
+                        if (updated) selectedReport.value = updated;
+                    }
+                    if (!selectedReport.value && reports.value.length > 0) {
+                        selectedReport.value = reports.value[0];
+                    }
+                } catch (e) { console.error(e); }
+            };
+
+            const normalizeReportContent = (content) => {
+                const summary = content.summary || {
+                    one_liner: content.topic_overview || '已完成跨帖学习提炼。',
+                    keywords: Array.isArray(content.domain_knowledge) ? content.domain_knowledge.slice(0, 8) : []
+                };
+                const learningInsight = content.learning_insight || {};
+                const crossPostSynthesis = content.cross_post_synthesis || {};
+                return {
+                    ...content,
+                    summary: {
+                        one_liner: summary.one_liner || '已完成跨帖学习提炼。',
+                        keywords: Array.isArray(summary.keywords) ? summary.keywords : []
+                    },
+                    learning_insight: {
+                        core_takeaways: Array.isArray(learningInsight.core_takeaways) ? learningInsight.core_takeaways : (Array.isArray(content.domain_knowledge) ? content.domain_knowledge : []),
+                        key_concepts: Array.isArray(learningInsight.key_concepts) ? learningInsight.key_concepts : [],
+                        method_playbook: Array.isArray(learningInsight.method_playbook) ? learningInsight.method_playbook : (Array.isArray(content.learning_path) ? content.learning_path : []),
+                        evidence_snippets: Array.isArray(learningInsight.evidence_snippets) ? learningInsight.evidence_snippets : (Array.isArray(content.source_evidence) ? content.source_evidence : []),
+                        pitfalls: Array.isArray(learningInsight.pitfalls) ? learningInsight.pitfalls : [],
+                        prerequisites: Array.isArray(learningInsight.prerequisites) ? learningInsight.prerequisites : [],
+                        practice_tasks: Array.isArray(learningInsight.practice_tasks) ? learningInsight.practice_tasks : [],
+                        reflection_questions: Array.isArray(learningInsight.reflection_questions) ? learningInsight.reflection_questions : (Array.isArray(content.checkpoint_quiz) ? content.checkpoint_quiz : []),
+                        next_actions_24h: Array.isArray(learningInsight.next_actions_24h) ? learningInsight.next_actions_24h : (Array.isArray(content.implementation_plan) ? content.implementation_plan : [])
+                    },
+                    cross_post_synthesis: {
+                        consensus: Array.isArray(crossPostSynthesis.consensus) ? crossPostSynthesis.consensus : (Array.isArray(content.cross_post_consensus) ? content.cross_post_consensus : []),
+                        conflicts: Array.isArray(crossPostSynthesis.conflicts) ? crossPostSynthesis.conflicts : (Array.isArray(content.cross_post_conflicts) ? content.cross_post_conflicts : []),
+                        knowledge_map: Array.isArray(crossPostSynthesis.knowledge_map) ? crossPostSynthesis.knowledge_map : (Array.isArray(content.concept_map) ? content.concept_map : []),
+                        source_evidence: Array.isArray(crossPostSynthesis.source_evidence) ? crossPostSynthesis.source_evidence : (Array.isArray(content.source_evidence) ? content.source_evidence : [])
+                    }
+                };
+            };
+
+            const fetchLatestAggregationJob = async () => {
+                try {
+                    const res = await fetch('/api/aggregate/jobs/latest');
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (data) aggregationJob.value = data;
+                } catch (e) { console.error(e); }
+            };
+
+            // Actions
+            const analyzeBatch = async () => {
+                isAnalyzing.value = true;
+                try {
+                    await fetch('/api/analyze/batch?limit=5', { method: 'POST' });
+                    pollStatus();
+                } catch (e) { isAnalyzing.value = false; }
+            };
+
+            const analyzeSingle = async (post) => {
+                post.status = 'processing';
+                isAnalyzing.value = true;
+                try {
+                    await fetch(`/api/analyze/${post.id}`, { method: 'POST' });
+                    pollStatus();
+                } catch (e) { post.status = 'failed'; }
+            };
+
+            const aggregateAnalysis = async () => {
+                if (selectedPostIds.value.length < 2) {
+                    alert('请至少选择 2 篇笔记进行聚合分析');
+                    return;
+                }
+                
+                if (!confirm(`将对选中的 ${selectedPostIds.value.length} 篇笔记进行整合分析，可能需要几分钟，确定吗？`)) return;
+
+                try {
+                    const res = await fetch('/api/aggregate', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ post_ids: selectedPostIds.value })
+                    });
+                    if (!res.ok) {
+                        throw new Error('聚合分析请求失败');
+                    }
+                    const result = await res.json();
+                    aggregationJob.value = {
+                        id: result.job_id,
+                        status: 'queued',
+                        progress: 0,
+                        message: '已提交，等待开始处理…'
+                    };
+                    currentView.value = 'reports';
+                    await fetchReports();
+                    pollAggregationJobStatus(result.job_id);
+                } catch (e) { alert('请求失败'); }
+            };
+
+            const downloadImages = async () => {
+                if (!confirm(`将下载选中 ${selectedPostIds.value.length} 篇笔记的图片到服务器本地，确定吗？`)) return;
+                try {
+                    await fetch('/api/download/images', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ post_ids: selectedPostIds.value })
+                    });
+                    alert('下载任务已在后台开始。');
+                } catch (e) { alert('请求失败'); }
+            };
+
+            const deleteSingle = async (post) => {
+                if (!confirm('确定删除？')) return;
+                await performDelete([post.id]);
+            };
+
+            const deleteSelected = async () => {
+                if (!confirm(`确定删除 ${selectedPostIds.value.length} 条？`)) return;
+                await performDelete(selectedPostIds.value);
+            };
+            
+            const performDelete = async (ids) => {
+                try {
+                    await fetch('/api/posts/delete', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ ids })
+                    });
+                    posts.value = posts.value.filter(p => !ids.includes(p.id));
+                    selectedPostIds.value = [];
+                    selectedPost.value = null;
+                } catch (e) { alert('删除失败'); }
+            };
+
+            const deleteReport = async (rep) => {
+                if (!confirm('确定删除此报告？')) return;
+                try {
+                    await fetch(`/api/reports/${rep.id}`, { method: 'DELETE' });
+                    reports.value = reports.value.filter(r => r.id !== rep.id);
+                    if (selectedReport.value?.id === rep.id) selectedReport.value = null;
+                } catch (e) { alert('删除失败'); }
+            };
+
+            // Utils
+            const pollStatus = () => {
+                if (window._pollInterval) return;
+                window._pollInterval = setInterval(async () => {
+                    await fetchPosts();
+                    const hasProcessing = posts.value.some(p => p.status === 'processing');
+                    if (!hasProcessing) {
+                        clearInterval(window._pollInterval);
+                        window._pollInterval = null;
+                        isAnalyzing.value = false;
+                        fetchReports();
+                    }
+                }, 2000);
+            };
+
+            const pollAggregationJobStatus = (jobId) => {
+                if (!jobId) return;
+                if (window._aggregatePollInterval) clearInterval(window._aggregatePollInterval);
+                window._aggregatePollInterval = setInterval(async () => {
+                    try {
+                        const res = await fetch(`/api/aggregate/jobs/${jobId}`);
+                        if (!res.ok) return;
+                        const job = await res.json();
+                        aggregationJob.value = job;
+                        if (job.status === 'completed' || job.status === 'failed') {
+                            clearInterval(window._aggregatePollInterval);
+                            window._aggregatePollInterval = null;
+                            await fetchReports();
+                            if (job.report_id) {
+                                const latest = reports.value.find(r => r.id === job.report_id);
+                                if (latest) selectedReport.value = latest;
+                            }
+                            if (job.status === 'failed') {
+                                alert(`聚合分析失败：${job.error_msg || '未知错误'}`);
+                            }
+                        }
+                    } catch (e) { console.error(e); }
+                }, 2000);
+            };
+
+            const selectPost = (p) => selectedPost.value = p;
+            const selectReport = (r) => selectedReport.value = r;
+            const clearSelection = () => {
+                selectedPostIds.value = [];
+            };
+            const toggleSelectAllVisible = () => {
+                const visibleIds = visiblePostIds.value;
+                if (visibleIds.length === 0) return;
+                if (isAllVisibleSelected.value) {
+                    selectedPostIds.value = selectedPostIds.value.filter(id => !visibleIds.includes(id));
+                    return;
+                }
+                selectedPostIds.value = Array.from(new Set([...selectedPostIds.value, ...visibleIds]));
+            };
+            const invertVisibleSelection = () => {
+                const visibleSet = new Set(visiblePostIds.value);
+                const selectedSet = new Set(selectedPostIds.value);
+                for (const id of visibleSet) {
+                    if (selectedSet.has(id)) {
+                        selectedSet.delete(id);
+                    } else {
+                        selectedSet.add(id);
+                    }
+                }
+                selectedPostIds.value = Array.from(selectedSet);
+            };
+            const quickSelectTop = (count) => {
+                const ids = filteredPosts.value.slice(0, count).map(p => p.id);
+                selectedPostIds.value = Array.from(new Set([...selectedPostIds.value, ...ids]));
+            };
+
+            const switchView = (view) => {
+                currentView.value = view;
+                if (view === 'reports') {
+                    fetchReports();
+                    fetchLatestAggregationJob();
+                } else if (view === 'posts') {
+                    fetchPosts();
+                }
+            };
+
+            onMounted(() => {
+                fetchPosts();
+                fetchReports();
+                fetchLatestAggregationJob().then(() => {
+                    if (isAggregating.value && aggregationJob.value?.id) {
+                        pollAggregationJobStatus(aggregationJob.value.id);
+                    }
+                });
+            });
+
+            return {
+                currentView, currentTab,
+                posts, reports, filteredPosts, visiblePostIds, isAllVisibleSelected, aggregationJob,
+                selectedPost, selectedPostIds, selectedReport,
+                isAnalyzing,
+                fetchPosts, fetchReports, switchView,
+                analyzeBatch, analyzeSingle, aggregateAnalysis, downloadImages,
+                deleteSingle, deleteSelected, deleteReport,
+                selectPost, selectReport, clearSelection, toggleSelectAllVisible, invertVisibleSelection, quickSelectTop
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>

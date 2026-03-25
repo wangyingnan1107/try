@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+sqlite-utils
+openai
+pydantic
+python-multipart
+jinja2

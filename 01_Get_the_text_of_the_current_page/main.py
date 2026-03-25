@@ -29,6 +29,12 @@ from text_processor import TextProcessor, clean_text, format_text
 # 导入io模块，用于字符串IO操作（类似Java的StringWriter）
 import io
 
+# 导入日志模块
+import logging
+
+# 获取日志记录器
+logger = logging.getLogger(__name__)
+
 # Streamlit页面配置
 # set_page_config()：设置页面标题、图标、布局等
 # 类似Java的Spring Boot中的@Configuration或配置类
@@ -143,6 +149,77 @@ def main():
         
         st.markdown("---")
         
+        # 浏览器连接选项
+        st.subheader("🔗 浏览器连接")
+        connect_browser = st.checkbox("连接已打开的浏览器", value=False,
+                                      help="如果目标网站需要登录，可以先在Chrome中登录，然后连接浏览器获取登录状态。")
+        
+        if connect_browser:
+            debugger_port = st.text_input("调试端口", value="9222",
+                                         help="Chrome启动时需要添加参数: --remote-debugging-port=9222")
+            
+            # 初始化浏览器连接状态
+            if 'browser_connected' not in st.session_state:
+                st.session_state.browser_connected = False
+            if 'scraper_instance' not in st.session_state:
+                st.session_state.scraper_instance = None
+            
+            # 连接按钮
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("🔌 连接浏览器", use_container_width=True):
+                    try:
+                        with st.spinner("正在连接浏览器..."):
+                            scraper = WebScraper()
+                            debugger_address = f"127.0.0.1:{debugger_port}"
+                            if scraper.connect_to_existing_browser(debugger_address):
+                                st.session_state.browser_connected = True
+                                st.session_state.scraper_instance = scraper
+                                st.success("✅ 浏览器连接成功！已获取登录状态。")
+                            else:
+                                st.error("❌ 连接失败，请确保：\n1. Chrome已以调试模式启动\n2. 调试端口正确\n3. Chrome中已登录目标网站")
+                    except Exception as e:
+                        st.error(f"❌ 连接失败：{str(e)}")
+                        st.info("💡 提示：请先关闭所有Chrome窗口，然后使用以下命令启动：\n\n"
+                               "**Windows:**\n"
+                               "```\n"
+                               '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222\n'
+                               "```\n\n"
+                               "**Mac:**\n"
+                               "```\n"
+                               "/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n"
+                               "```\n\n"
+                               "**Linux:**\n"
+                               "```\n"
+                               "google-chrome --remote-debugging-port=9222\n"
+                               "```")
+            
+            with col_btn2:
+                if st.button("🔌 断开连接", use_container_width=True):
+                    if st.session_state.scraper_instance:
+                        if st.session_state.scraper_instance.connected_driver:
+                            try:
+                                st.session_state.scraper_instance.connected_driver.quit()
+                            except:
+                                pass
+                    st.session_state.browser_connected = False
+                    st.session_state.scraper_instance = None
+                    st.success("已断开连接")
+            
+            # 显示连接状态
+            if st.session_state.browser_connected:
+                st.success("🟢 浏览器已连接")
+                if st.session_state.scraper_instance and st.session_state.scraper_instance.connected_driver:
+                    try:
+                        current_url = st.session_state.scraper_instance.connected_driver.current_url
+                        st.info(f"当前浏览器页面：{current_url}")
+                    except:
+                        pass
+            else:
+                st.info("⚪ 未连接")
+        
+        st.markdown("---")
+        
         # 使用说明
         st.subheader("📖 使用说明")
         st.markdown("""
@@ -199,8 +276,20 @@ def main():
             with st.spinner("⏳ 正在抓取网页，请稍候..."):
                 try:
                     # 创建抓取器并获取文本
-                    scraper = WebScraper()
-                    raw_text = scraper.scrape_webpage_text(url_input.strip(), use_selenium=use_selenium)
+                    # 如果已连接浏览器，使用已连接的实例；否则创建新实例
+                    if connect_browser and st.session_state.browser_connected and st.session_state.scraper_instance:
+                        scraper = st.session_state.scraper_instance
+                        use_existing_browser = True
+                        logger.info("使用已连接的浏览器实例")
+                    else:
+                        scraper = WebScraper()
+                        use_existing_browser = False
+                    
+                    raw_text = scraper.scrape_webpage_text(
+                        url_input.strip(), 
+                        use_selenium=use_selenium or connect_browser,  # 如果连接浏览器，自动使用Selenium
+                        use_existing_browser=use_existing_browser
+                    )
                     
                     # 文本处理
                     if auto_clean:

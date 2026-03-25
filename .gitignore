@@ -1,0 +1,9 @@
+.env
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.trae/
+node_modules/
+02_redbook_weibo_get_info/downloads/
+02_redbook_weibo_get_info/images/
